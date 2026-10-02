@@ -1,111 +1,59 @@
+import os
 import boto3
 import pandas as pd
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import confusion_matrix
 
-AWS_ACCESS_KEY = 'Mtna6'
-AWS_SECRET_KEY = '09rf0s404j0w'
-AWS_REGION = 'eu-central-1'
+nome_bucket = 'biomedical_ingestion'
+regione = 'eu-central-1'
 
-backet = boto3.client('s3',
-                      aws_access_key_id=AWS_ACCESS_KEY,
-                      aws_secret_access_key=AWS_SECRET_KEY,
-                      region_name=AWS_REGION)
+s3 = boto3.client(
+    's3',
+    region_name=regione,
+    aws_access_key_id=os.getenv('AWS_ACCESS_KEY_ID'),
+    aws_secret_access_key=os.getenv('AWS_SECRET_ACCESS_KEY')
+)
 
-biomedical_ingestion = 'mybucket'
+configurazione_posizione = {'LocationConstraint': regione}
+s3.create_bucket(
+    Bucket=nome_bucket,
+    CreateBucketConfiguration=configurazione_posizione
+)
 
-try:
-    backet.create_bucket(
-        Bucket=biomedical_ingestion,
-        CreateBucketConfiguration={
-            'LocationConstraint': AWS_REGION
-        }
-    )
-    backet.upload_file('foglie_pulite_gps_qualita.csv', biomedical_ingestion, 'raw/dati_test_01.csv')
-except FileNotFoundError as e:
-    print('Il file non è presente al suo interno!!!')
+s3.upload_file('foglie_pulite_gps_qualita.csv', nome_bucket, 'dataset_foglie_raw.csv')
 
+df = pd.read_csv('foglie_pulite_gps_qualita.csv')
 
-def clean_data() -> str:
-    file = backet.get_object(Bucket=biomedical_ingestion, Key='raw/dati_test_01.csv')
+def pulisci_dataset(df_input: pd.DataFrame) -> pd.DataFrame:
+    df_pulito = df_input.dropna().copy()
+    df_pulito['Leaf_Name'] = df_pulito['Leaf_Name'].astype('category').cat.codes
+    df_pulito = df_pulito.drop(columns=['Device_Type'])
+    return df_pulito
 
-    df = pd.read_csv(file['Body'])
+df_processato = pulisci_dataset(df)
 
-    df['Leaf_Name'] = df['Leaf_Name'].astype('category').cat.codes
+meta = len(df_processato) // 2
 
-    new_backet = backet.put_object(Bucket=biomedical_ingestion, Key='processed/dati_reclean.csv', Body=df.to_csv(
-        index=False
-    ))
+parte_1 = df_processato.iloc[:meta]
+parte_2 = df_processato.iloc[meta:]
 
-    return 'Pulizia completata correttamente ✅'
+x_train_1 = parte_1.drop(columns=['Leaf_Quality_Score'])
+y_train_1 = parte_1['Leaf_Quality_Score']
 
-print(clean_data())
+x_test_1 = parte_2.drop(columns=['Leaf_Quality_Score'])
+y_test_1 = parte_2['Leaf_Quality_Score']
 
-df = pd.read_csv('processed/dati_reclean.csv')
-def validation_parts(df: pd.DataFrame) -> pd.DataFrame:
-    tot_righe: int = len(df)
-    metà : int = tot_righe // 2
-    for_a = df.iloc[:metà]
-    for_b = df.iloc[metà:]
+modello_1 = RandomForestClassifier(random_state=42)
+modello_1.fit(x_train_1, y_train_1)
+accuratezza_1 = modello_1.score(x_test_1, y_test_1)
+print(f"Accuratezza Test 1 (Train su Parte 1, Test su Parte 2): {accuratezza_1 * 100:.2f}%")
 
-    y_a = for_a['Qualità']
-    X_a = for_a.drop(columns=['Qualità', 'Leaf_Name'])
+x_train_2 = parte_2.drop(columns=['Leaf_Quality_Score'])
+y_train_2 = parte_2['Leaf_Quality_Score']
 
-    y_b = for_b['Qualità']
-    X_b = for_b.drop(columns=['Qualità', 'Leaf_Name'])
+x_test_2 = parte_1.drop(columns=['Leaf_Quality_Score'])
+y_test_2 = parte_1['Leaf_Quality_Score']
 
-    return X_a, y_a, X_b, y_b
-
-def fit_Run_Forrest(X_a, y_a, X_b, y_b) -> df:
-    print('Random forrest prima metà dei dati')
-    model_1 = RandomForestClassifier(n_estimators=100, max_depth=10, random_state=0)
-
-    model_1.fit(X_a, y_a)
-
-    y_pred = model_1.predict(X_b)
-
-    print(f"Score Modello 1: {model_1.score(X_b, y_b)}")  # Esame su B!
-    print("Matrice di Confusione 1:")
-    print(confusion_matrix(y_b, y_pred))
-
-    print('Random forrest seconda metà dei dati')
-    model_2 = RandomForestClassifier(n_estimators=100, max_depth=10, random_state=0)
-
-    model_2.fit(X_b, y_b)
-
-    y_pred_2 = model_2.predict(X_a)
-
-    print(f"Score Modello 2: {model_2.score(X_a, y_a)}")  # Esame su B!
-    print("Matrice di Confusione 1:")
-    print(confusion_matrix(y_a, y_pred_2))
-
-    return model_1, model_2
-
-Xa, ya, Xb, yb = validation_parts(df)
-m1, m2 = fit_Run_Forrest(Xa, ya, Xb, yb)
-
-print("\nValidazione incrociata completata con successo! 🚀")
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+modello_2 = RandomForestClassifier(random_state=42)
+modello_2.fit(x_train_2, y_train_2)
+accuratezza_2 = modello_2.score(x_test_2, y_test_2)
+print(f"Accuratezza Test 2 (Train su Parte 2, Test su Parte 1): {accuratezza_2 * 100:.2f}%")
